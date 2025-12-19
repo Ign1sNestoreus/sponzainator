@@ -1,4 +1,5 @@
-output.tga
-model.obj
-model.mat
-model.png
+*.tga
+*.obj
+*.mtl
+*.png
+textures/
