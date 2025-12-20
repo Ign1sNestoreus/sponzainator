@@ -256,13 +256,11 @@ class Texture:
 @dataclass
 class Material:
     """Материал для Phong освещения"""
-    ambient: Vec3 = Vec3(0.2, 0.2, 0.2)
+    ambient: Vec3 = Vec3(0.5, 0.5, 0.5)
     diffuse: Vec3 = Vec3(0.7, 0.7, 0.7)
     specular: Vec3 = Vec3(1.0, 1.0, 1.0)
     shininess: float = 32.0
     texture: Optional[Texture] = None
-
-import os  # Добавьте этот импорт в начало файла
 
 class Model:
     """Модель из OBJ файла"""
@@ -508,23 +506,101 @@ class Model:
         print(f"Загружено материалов: {len(materials)}")
         return materials
 
+    def compute_normals(self):
+        """Вычисление нормалей для модели, если они не загружены из OBJ"""
+        if not self.normals:
+            # Инициализируем нормали нулевыми векторами
+            self.normals = [Vec3(0, 0, 0) for _ in range(len(self.vertices))]
+            
+            # Для каждого треугольника вычисляем нормаль и добавляем к вершинам
+            for face in self.faces:
+                vertices_idx, texs_idx, normals_idx, material_name = face
+                
+                if len(vertices_idx) == 3:
+                    v0 = self.vertices[vertices_idx[0]]
+                    v1 = self.vertices[vertices_idx[1]]
+                    v2 = self.vertices[vertices_idx[2]]
+                    
+                    # Вычисляем нормаль треугольника
+                    edge1 = v1 - v0
+                    edge2 = v2 - v0
+                    face_normal = edge1.cross(edge2).normalize()
+                    
+                    # Добавляем нормаль треугольника к каждой вершине
+                    for v_idx in vertices_idx:
+                        self.normals[v_idx] = self.normals[v_idx] + face_normal
+            
+            # Нормализуем все нормали
+            for i in range(len(self.normals)):
+                self.normals[i] = self.normals[i].normalize()
+            
+            print(f"Вычислены нормали для {len(self.normals)} вершин")
+        
+        # Обновляем индексы нормалей в гранях
+        for i, face in enumerate(self.faces):
+            vertices_idx, texs_idx, normals_idx, material_name = face
+            # Используем те же индексы, что и для вершин (предполагаем per-vertex нормали)
+            new_normals_idx = vertices_idx.copy()
+            self.faces[i] = (vertices_idx, texs_idx, new_normals_idx, material_name)
+
+    def compute_smooth_normals(self):
+        """Вычисление сглаженных нормалей по методу усреднения"""
+        # Создаем список нормалей для каждой вершины
+        vertex_normals = [[] for _ in range(len(self.vertices))]
+        
+        # Для каждого треугольника
+        for face in self.faces:
+            vertices_idx, texs_idx, normals_idx, material_name = face
+            
+            if len(vertices_idx) == 3:
+                v0 = self.vertices[vertices_idx[0]]
+                v1 = self.vertices[vertices_idx[1]]
+                v2 = self.vertices[vertices_idx[2]]
+                
+                # Вычисляем нормаль треугольника
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                face_normal = edge1.cross(edge2).normalize()
+                
+                # Добавляем нормаль треугольника к списку нормалей каждой вершины
+                for v_idx in vertices_idx:
+                    vertex_normals[v_idx].append(face_normal)
+        
+        # Вычисляем усредненные нормали для каждой вершины
+        self.normals = []
+        for normals_list in vertex_normals:
+            if normals_list:
+                # Суммируем все нормали
+                avg_normal = Vec3(0, 0, 0)
+                for normal in normals_list:
+                    avg_normal = avg_normal + normal
+                # Нормализуем результат
+                self.normals.append(avg_normal.normalize())
+            else:
+                # Если у вершины нет нормалей, используем стандартную
+                self.normals.append(Vec3(0, 1, 0))
+        
+        print(f"Вычислены сглаженные нормали для {len(self.normals)} вершин")
+
 # Псевдошейдеры
 
 class PhongShader:
     """Шейдер для Phong освещения, но, внезапно, с текстурами"""
     def __init__(self):
-        self.light_pos = Vec3(5, 5, -5)
+        self.light_pos = Vec3(5, 5, 5)
         self.light_color = Vec3(1, 1, 1)
         self.view_pos = Vec3(0, 0, 5)
         
     def vertex_shader(self, vertex: Vec3, tex_coord: Vec2, normal: Vec3, 
-                     mvp_matrix: Mat4, model_matrix: Mat4, view_matrix: Mat4) -> Tuple[Vec3, Vec2, Vec3, Vec3]:
+                 mvp_matrix: Mat4, model_matrix: Mat4, view_matrix: Mat4) -> Tuple[Vec3, Vec2, Vec3, Vec3]:
         """Вершинный шейдер"""
         # Преобразование позиции
         world_pos = model_matrix * vertex
         clip_pos = mvp_matrix * vertex
         
-        # Преобразование нормали
+        # ПРАВИЛЬНОЕ преобразование нормали
+        # Для нормалей нужно использовать транспонированную обратную матрицу модели
+        # Упрощенный вариант для изотропного масштабирования:
         normal_matrix = model_matrix
         world_normal = normal_matrix * normal
         world_normal = world_normal.normalize()
@@ -630,13 +706,13 @@ class Rasterizer:
     def rasterize_triangle(self, v0, v1, v2, t0, t1, t2, n0, n1, n2, 
                       world0, world1, world2, material, texture=None):
         """Растеризация треугольника с барицентрической интерполяцией"""
-        # Backface Culling - отсечение нелицевых граней
-        edge1 = v1 - v0
-        edge2 = v2 - v0
-        normal_z = edge1.x * edge2.y - edge1.y * edge2.x
+        # # Backface Culling - отсечение нелицевых граней
+        # edge1 = v1 - v0
+        # edge2 = v2 - v0
+        # normal_z = edge1.x * edge2.y - edge1.y * edge2.x
         
-        if normal_z <= 0:  # Если грань смотрит от камеры - пропускаем
-            return
+        # if normal_z <= 0:  # Если грань смотрит от камеры - пропускаем
+        #     return
         
         if (v0.x < 0 and v1.x < 0 and v2.x < 0) or \
         (v0.x >= self.width and v1.x >= self.width and v2.x >= self.width) or \
@@ -715,6 +791,7 @@ class Rasterizer:
         
         MAX_TRIANGLES = 170000
         faces_to_render = model.faces[:MAX_TRIANGLES]
+        faces_rendered = 0
     
         print(f"Рендеринг {len(faces_to_render)} треугольников (из {len(model.faces)})...")
         
@@ -791,10 +868,11 @@ class Rasterizer:
                 )
             
             # Вывод прогресса для больших моделей
+            faces_rendered += 1
             if face_idx % 1000 == 0:
                 print(f"  Обработано {face_idx}/{len(faces_to_render)} треугольников...")
         
-        print(f"Рендеринг завершен! Только первые {MAX_TRIANGLES} треугольников.")
+        print(f"Рендеринг завершен! Только {faces_rendered} из первых {MAX_TRIANGLES} треугольников.")
     
     def save_tga(self, filename):
         """Сохранение изображения в формате TGA"""
@@ -892,21 +970,23 @@ def create_simple_cube():
     return model
 
 def main():
-    rasterizer = Rasterizer(400, 300)
+    rasterizer = Rasterizer(800, 600)
     
     camera = Camera(
-        position=Vec3(1000, 1000, -1000),
-        target=Vec3(0, 0, 0),
+        position=Vec3(1, 2, 3), 
+        target=Vec3(0, 1, 0),
         up=Vec3(0, 1, 0),
-        fov=60.0,
-        aspect_ratio=800/600,
+        fov=50.0,
+        aspect_ratio=4/3,
         near=0.1,
         far=100.0
     )
     
     try:
-        model = Model("sponza.obj")
-        print("Модель загружена из sponza.obj")
+        model = Model("monke.obj")
+        model.compute_normals()
+        model.compute_smooth_normals()
+        print("Модель загружена из monke.obj")
     except FileNotFoundError:
         print("Файл model.obj не найден. Используется тестовый куб.")
         model = create_simple_cube()
